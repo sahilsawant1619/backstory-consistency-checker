@@ -1,0 +1,20 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+
+# Output files
+output/
+
+# User data (not sharing novels)
+data/novel.txt
+data/backstory.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
