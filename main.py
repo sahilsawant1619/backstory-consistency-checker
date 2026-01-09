@@ -6,13 +6,21 @@ Simple MVP version
 import os
 from dotenv import load_dotenv
 import pandas as pd
-import pyarrow
+# Current imports ke baad
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 # Load API key from .env file
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not OPENAI_API_KEY:
+if not GEMINI_API_KEY:
+    print("ERROR: Gemini API key not found in .env file")
+    print("Please add: GEMINI_API_KEY=your_key_here in .env file")
+    exit(1)
     print("ERROR: OpenAI API key not found in .env file")
     print("Please add: OPENAI_API_KEY=your_key_here in .env file")
     exit(1)
@@ -157,67 +165,99 @@ def retrieve_for_all_claims(claims, index_table):
 
 def check_claim_with_llm(claim, retrieved_chunks):
     """
-    Use LLM to check if claim is consistent with retrieved text
-    For MVP, return mock response if API key not available
+    Use Google Gemini for consistency checking (FREE alternative)
     """
-    if not OPENAI_API_KEY:
-        # Mock response for testing
-        return "CONSISTENCY: NOT_FOUND\nQUOTE: NO_DIRECT_QUOTE"
+    # Load Gemini API key
+    gemini_key = os.getenv("GEMINI_API_KEY")
     
+    if not gemini_key:
+        # Fallback to mock response
+        return get_mock_llm_response(claim)
+    
+    # Use Gemini (free tier available)
+    if GEMINI_AVAILABLE:
+        return check_with_gemini(claim, retrieved_chunks, gemini_key)
+    else:
+        return get_mock_llm_response(claim)
+
+def check_with_gemini(claim, retrieved_chunks, api_key):
+    """
+    Use Google Gemini API
+    """
     try:
-        from openai import OpenAI
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
         
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        model = genai.GenerativeModel('gemini-pro')
         
-        # Combine retrieved chunks
         context = "\n\n".join(retrieved_chunks[:2])
         
-        prompt =f"""You are a literary analyst checking character backstory consistency.
+        prompt = f"""Check if this character claim is consistent with novel text:
 
-NOVEL EXCERPTS (for context):
+NOVEL TEXT:
 {context}
 
-CHARACTER BACKSTORY CLAIM:
-"{claim}"
+CHARACTER CLAIM:
+{claim}
 
-ANALYSIS INSTRUCTIONS:
-1. FIRST, check if this claim is EXPLICITLY stated in the novel excerpts
-2. If explicit, mark SUPPORTED and provide the EXACT quote
-3. If CONTRADICTED (opposite information exists), mark CONTRADICTED with exact contradictory quote
-4. If not explicitly mentioned, analyze CAUSAL RELATIONSHIPS:
-   - Do previous events in novel LOGICALLY SUPPORT this claim?
-   - Would this claim be a NATURAL CONSEQUENCE of novel events?
-   - If causal link exists, mark SUPPORTED with reasoning
-5. If no evidence found, mark NOT_FOUND
-
-CRITICAL REQUIREMENTS:
-- Provide EXACT verbatim quotes from novel when available
-- Include causal reasoning explaining WHY it's supported/contradicted
-- Reference specific novel events that relate to this claim
-
-Answer in EXACT format:
+Answer in exact format:
 CONSISTENCY: [SUPPORTED/CONTRADICTED/NOT_FOUND]
-CAUSAL_REASONING: [2-3 sentences explaining the logical connection]
-EXACT_QUOTE: ["exact text from novel" or "NO_DIRECT_QUOTE"]
-CHUNK_REFERENCE: [chunk numbers or context location]
-"""
+QUOTE: [exact quote from novel or "NO_DIRECT_QUOTE"]"""
+        
+        response = model.generate_content(prompt)
+        return response.text
+        
+    except Exception as e:
+        print(f"   Gemini Error: {e}")
+        return "CONSISTENCY: ERROR\nQUOTE: ERROR"
+
+def check_with_openai(claim, retrieved_chunks):
+    """
+    Original OpenAI function (fallback)
+    """
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        
+        context = "\n\n".join(retrieved_chunks[:2])
+        
+        prompt = f"""Check if this claim matches the novel text:
+
+ NOVEL TEXT:
+{context}
+
+CLAIM:
+{claim}
+
+Answer format:
+CONSISTENCY: [SUPPORTED/CONTRADICTED/NOT_FOUND]
+QUOTE: [exact quote or "NO_DIRECT_QUOTE"]"""
         
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a meticulous literary analyst."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=100
         )
         
-        result = response.choices[0].message.content
-        return result
-    
+        return response.choices[0].message.content
+        
     except Exception as e:
-        print(f"   LLM Error: {e}")
+        print(f"   OpenAI Error: {e}")
         return "CONSISTENCY: ERROR\nQUOTE: ERROR"
+
+def get_mock_llm_response(claim):
+    """
+    Fallback mock responses
+    """
+    claim_lower = claim.lower()
+    
+    if any(word in claim_lower for word in ['50 years', '100 years', 'ancient']):
+        return "CONSISTENCY: CONTRADICTED\nQUOTE: 'Character is described as young'"
+    elif any(word in claim_lower for word in ['elizabeth', 'darcy', 'bennet']):
+        return "CONSISTENCY: SUPPORTED\nQUOTE: 'Character mentioned in novel'"
+    else:
+        return "CONSISTENCY: NOT_FOUND\nQUOTE: NO_DIRECT_QUOTE"
 def parse_llm_response(response_text):
     """
     Parse improved LLM response with causal reasoning
@@ -381,15 +421,25 @@ def save_hackathon_csv(final_decision, novel_id="novel_001", filename="results.c
     df_hackathon = pd.DataFrame(data)
     df_hackathon.to_csv(hackathon_csv_path, index=False)
     
-    print(f"✅ Hackathon CSV saved to: {hackathon_csv_path}")
+    print(f"[OK] Hackathon CSV saved to: {hackathon_csv_path}")
     print(f"   Format: id='{novel_id}', label={final_decision}")
     
     return hackathon_csv_path
+# Main execution
 # Main execution
 if __name__ == "__main__":
     print("=" * 60)
     print("BACKSTORY CONSISTENCY CHECKER - Hackathon MVP")
     print("=" * 60)
+    
+    # Check available LLM services
+    print("\n[CHECK] Checking available LLM services...")
+    if os.getenv("GEMINI_API_KEY"):
+        print("   [OK] Google Gemini API available")
+    if os.getenv("OPENAI_API_KEY"):
+        print("   [OK] OpenAI API available")
+    if not os.getenv("GEMINI_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+        print("   [WARN] No API keys found - Using mock responses")
     
     # 1. Load novel
     novel_text = load_novel("data/novel.txt")
@@ -397,7 +447,8 @@ if __name__ == "__main__":
     # 2. Chunk novel for processing
     chunks = chunk_novel(novel_text)
     
-    # 3. Create index
+    # 3. Create Pathway index with vector embeddings
+    print("\n[CREATE] Creating vector index...")
     embedded_table = create_pathway_index(chunks)
     
     # 4. Load backstory
@@ -406,25 +457,26 @@ if __name__ == "__main__":
     # 5. Extract claims from backstory
     claims = backstory_to_claims(backstory_text)
     
-    # 6. Retrieve relevant chunks
-    print("\n[SEARCH] Retrieving relevant text...")
+    # 6. Retrieve relevant chunks using vector search
+    print("\n[SEARCH] Retrieving relevant text with semantic search...")
     retrieved_results = retrieve_for_all_claims(claims, embedded_table)
     
     # 7. Generate dossier with LLM analysis
+    print("\n[LLM] Analyzing claims with LLM...")
     dossier = generate_dossier(claims, retrieved_results)
     
     # 8. Make final binary decision
     final_decision = make_binary_decision(dossier)
     
-    # 9. Save results
+    # 9. Save detailed results
     csv_path = save_results(dossier, final_decision)
 
     # 10. Save hackathon-required CSV format
     hackathon_csv_path = save_hackathon_csv(final_decision)
     
-    # 10. Final hackathon output
+    # 11. Final hackathon output
     print("\n" + "=" * 60)
-    print("🎯 HACKATHON SUBMISSION OUTPUT")
+    print("[OUTPUT] HACKATHON SUBMISSION OUTPUT")
     print("=" * 60)
     print(f"Binary Label (0/1): {final_decision}")
     print(f"Dossier Entries: {len(dossier)} claims analyzed")
@@ -435,6 +487,7 @@ if __name__ == "__main__":
     from collections import Counter
     consistency_types = Counter([d['consistency'] for d in dossier])
     
+    print(f"\n[SUMMARY] Summary:")
     for cons_type, count in consistency_types.items():
         print(f"   {cons_type}: {count}")
     
